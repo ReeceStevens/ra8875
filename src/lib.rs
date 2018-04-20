@@ -66,7 +66,7 @@ enum Register {
     Heaw1   = 0x35,
     Veaw0   = 0x36,
     Veaw1   = 0x37,
-    Mlcr    = 0x8E,
+    Mclr    = 0x8E,
     Dcr     = 0x90,
     Mwcr0   = 0x40,
     CurH0   = 0x46,
@@ -369,6 +369,9 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
         self.write_register(Register::Vsaw1, 0)?;
         self.write_register(Register::Veaw0, ((height - 1) & 0xFF) as u8)?;
         self.write_register(Register::Veaw1, ((height - 1) >> 8) as u8)?;
+
+        // Clear screen
+        self.write_register(Register::Mclr, cmds::Mclr::Start as u8)?;
 
         self.text_mode()?;
 
