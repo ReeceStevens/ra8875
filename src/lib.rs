@@ -2,21 +2,18 @@
 //! A driver for the RA8875 display chip. Adapted from Adafruit's open-source
 //! driver for their RA8875 line of TFT displays.
 #![allow(dead_code)]
+#![no_std]
 
 #[macro_use]
 extern crate nb;
 extern crate embedded_hal as hal;
 
+use core::fmt;
+use core::fmt::Write;
 use hal::spi::FullDuplex;
 use hal::digital::InputPin;
 
 type SpiError<SPI> = <SPI as FullDuplex<u8>>::Error;
-
-#[derive(Copy,Clone,Debug)]
-enum DisplayType {
-    small_480x272,
-    large_800x480
-}
 
 #[derive(Copy,Clone)]
 enum Color {
@@ -97,7 +94,31 @@ enum Register {
     Bewr0   = 0x5C,
     Bewr1   = 0x5D,
     Behr0   = 0x5E,
-    Behr1   = 0x5F
+    Behr1   = 0x5F,
+    TextX0  = 0x2A,
+    TextX1  = 0x2B,
+    TextY0  = 0x2C,
+    TextY1  = 0x2D,
+    TextBg0 = 0x60,
+    TextBg1 = 0x61,
+    TextBg2 = 0x62,
+    Color0 = 0x63,
+    Color1 = 0x64,
+    Color2 = 0x65,
+    FontOptions = 0x22,
+    ShapeStartX0 = 0x91,
+    ShapeStartX1 = 0x92,
+    ShapeStartY0 = 0x93,
+    ShapeStartY1 = 0x94,
+    ShapeEndX0 = 0x95,
+    ShapeEndX1 = 0x96,
+    ShapeEndY0 = 0x97,
+    ShapeEndY1 = 0x98,
+    CircleX0 = 0x99,
+    CircleX1 = 0x9a,
+    CircleY0 = 0x9b,
+    CircleY1 = 0x9c,
+    CircleR = 0x9d
 }
 
 mod cmds {
@@ -251,11 +272,33 @@ mod cmds {
 }
 
 
+type Coord = (i16, i16);
+
+struct TextModeSettings {
+    cursor: Coord,
+    fg_color: u16,
+    bg_color: Option<u16>,
+    text_scale: u8,
+    transparency: bool
+}
+
+struct GraphicsModeSettings {
+    cursor: Coord,
+    color: u16
+}
+
+#[derive(Copy,Clone)]
+enum Mode {
+    Text,
+    Graphics
+}
+
 struct RA8875<SPI: FullDuplex<u8>> {
     spi: SPI,
-    display_type: DisplayType,
-    width: u16,
-    height: u16,
+    dims: (u16,u16),
+    text_settings: TextModeSettings,
+    gfx_settings: GraphicsModeSettings,
+    mode: Mode,
     ready: InputPin
 }
 
@@ -312,13 +355,12 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
     }
 
     fn init(&mut self) -> Result<(), SpiError<SPI>> {
-        let width = self.width;
-        let height = self.height;
+        let (width, height) = self.dims;
         self.write_register(Register::PllC1, cmds::PllC1::Div1 as u8 + 10)?;
         self.write_register(Register::PllC2, cmds::PllC2::Div4 as u8)?;
         self.write_register(Register::Sysr, cmds::Sysr::BBP_16 as u8)?;
-        let t = match self.display_type {
-            DisplayType::small_480x272 => {
+        let t = match self.dims {
+            (480, 272) => {
                 Timing {
                     pixclk          : cmds::Pcsr::Pdatl as u8 | cmds::Pcsr::Clk_4 as u8,
                     hsync_nondisp   : 10,
@@ -331,7 +373,7 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
 
                 }
             },
-            DisplayType::large_800x480 => {
+            (800, 480) => {
                 Timing {
                     pixclk          : cmds::Pcsr::Pdatl as u8 | cmds::Pcsr::Clk_2 as u8,
                     hsync_nondisp   : 26,
@@ -342,7 +384,8 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
                     vsync_start     : 23,
                     vsync_pw        : 2,
                 }
-            }
+            },
+            _ => { panic!("Unsupported display dimensions."); }
         };
         self.write_register(Register::Pcsr, t.pixclk)?;
 
@@ -382,21 +425,253 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
     ///
     /// This currently forces the user to select the internal ROM font.
     pub fn text_mode(&mut self) -> Result<(), SpiError<SPI>>{
-        let tmp = self.read_register(Register::Mwcr0)?;
-        block!(self.write_data(tmp | cmds::Mwcr0::TxtMode as u8))?;
+        match self.mode {
+            Mode::Text => Ok(()),
+            Mode::Graphics => {
+                let tmp = self.read_register(Register::Mwcr0)?;
+                block!(self.write_data(tmp | cmds::Mwcr0::TxtMode as u8))?;
 
-        // Sets the internal ROM font.
-        // TODO: Get the register names + values for this so it isn't so cryptic.
-        block!(self.write_command(0x21))?;
-        let tmp = block!(self.read_data())?;
-        block!(self.write_data(tmp & ((1<<7) | (1<<5))))?;
+                // Sets the internal ROM font.
+                // TODO: Get the register names + values for this so it isn't so cryptic.
+                block!(self.write_command(0x21))?;
+                let tmp = block!(self.read_data())?;
+                block!(self.write_data(tmp & ((1<<7) | (1<<5))))?;
 
-        // Clear serial font ROM settings
-        block!(self.write_command(0x2F))?;
-        block!(self.write_data(0x00))?;
+                // Clear serial font ROM settings
+                block!(self.write_command(0x2F))?;
+                block!(self.write_data(0x00))?;
+
+                self.mode = Mode::Text;
+
+                Ok(())
+            }
+        }
+    }
+
+    pub fn set_text_scale(&mut self, scale: u8) -> Result<(), SpiError<SPI>> {
+        let bit_pattern = match scale {
+            0 => 0b0000,
+            1 => 0b0101,
+            2 => 0b1010,
+            3 => 0b1111,
+            _ => 0b1111
+        };
+        let mut tmp = self.read_register(Register::FontOptions)?;
+        tmp &= !(0xF);
+        block!(self.write_data(tmp | bit_pattern))?;
+
+        self.text_settings.text_scale = scale;
 
         Ok(())
     }
+
+    /// Enables graphics mode
+    pub fn graphics_mode(&mut self) -> Result<(), SpiError<SPI>> {
+        match self.mode {
+            Mode::Graphics => Ok(()),
+            Mode::Text => {
+                let tmp = self.read_register(Register::Mwcr0)?;
+                block!(self.write_data(tmp & !(cmds::Mwcr0::TxtMode as u8)))?;
+                self.mode = Mode::Graphics;
+                Ok(())
+            }
+        }
+    }
+
+    /// Low-level function to push a raw chunk of pixel data.
+    fn push_pixels(&mut self, num_pixels: u32, color: u16) -> Result<(), SpiError<SPI>> {
+        block!(self.spi.send(Command::DataWrite as u8))?;
+        for _ in 0..num_pixels {
+            block!(self.spi.send((color >> 8) as u8))?;
+            block!(self.spi.send(color as u8))?;
+        }
+        Ok(())
+    }
+
+    /// Sets the cursor position for the current display mode.
+    fn set_cursor(&mut self, new_position: Coord) -> Result<(), SpiError<SPI>> {
+        let (x, y) = new_position;
+        match self.mode {
+            Mode::Graphics => {
+                self.write_register(Register::CurH0, x as u8)?;
+                self.write_register(Register::CurH1, (x >> 8) as u8)?;
+                self.write_register(Register::CurV0, y as u8)?;
+                self.write_register(Register::CurV1, (y >> 8) as u8)?;
+                self.gfx_settings.cursor = new_position;
+                Ok(())
+            },
+            Mode::Text => {
+                self.write_register(Register::TextX0, x as u8)?;
+                self.write_register(Register::TextX1, (x >> 8) as u8)?;
+                self.write_register(Register::TextY0, y as u8)?;
+                self.write_register(Register::TextY1, (y >> 8) as u8)?;
+                self.text_settings.cursor = new_position;
+                Ok(())
+
+            }
+        }
+    }
+
+    /// Sets the colors for the current display mode. If `bg_color` is `None`, then a transparent
+    /// background will be used.
+    fn set_colors(&mut self, fg_color: u16, bg_color: Option<u16>) -> Result<(), SpiError<SPI>> {
+        match self.mode {
+            Mode::Graphics => {
+                // TODO
+                Ok(())
+            },
+            Mode::Text => {
+                self.write_register(Register::Color0, ((fg_color & 0xf800) >> 11) as u8)?;
+                self.write_register(Register::Color1, ((fg_color & 0x07e0) >> 5) as u8)?;
+                self.write_register(Register::Color2, (fg_color & 0x001f) as u8)?;
+
+                match bg_color {
+                    Some(color) => {
+                        self.write_register(Register::TextBg0, ((color & 0xf800) >> 11) as u8)?;
+                        self.write_register(Register::TextBg1, ((color & 0x07e0) >> 5) as u8)?;
+                        self.write_register(Register::TextBg2, (color & 0x001f) as u8)?;
+                        // Clear transparency flag
+                        let tmp = self.read_register(Register::FontOptions)?;
+                        block!(self.write_data(tmp & !(1<<6)))?;
+                    },
+                    None => {
+                        // Set transparency flag
+                        let tmp = self.read_register(Register::FontOptions)?;
+                        block!(self.write_data(tmp | (1<<6)))?;
+                    }
+                }
+
+                self.text_settings.fg_color = fg_color;
+                self.text_settings.bg_color = bg_color;
+
+                Ok(())
+            }
+        }
+    }
+
+    fn fill_rect(&mut self) -> Result<(), SpiError<SPI>> {
+        block!(self.write_command(Register::Dcr as u8))?;
+        block!(self.write_data(cmds::Dcr::DRAWSQUARE as u8))?;
+        block!(self.write_data(cmds::Dcr::LINESQUTRI_START as u8
+                               | cmds::Dcr::FILL as u8
+                               | cmds::Dcr::DRAWSQUARE as u8))?;
+        Ok(())
+    }
+
+    /// Draw a single `color` colored pixel at coordinate `coord`.
+    pub fn draw_pixel(&mut self, coord: Coord, color: u16) -> Result<(), SpiError<SPI>> {
+        self.set_cursor(coord)?;
+        block!(self.write_command(Register::Mrwc as u8))?;
+        block!(self.spi.send(Command::DataWrite as u8))?;
+        block!(self.spi.send((color >> 8) as u8))?;
+        block!(self.spi.send(color as u8))?;
+        Ok(())
+    }
+
+    pub fn draw_line(&mut self, start: Coord, end: Coord, color: u16) -> Result<(), SpiError<SPI>> {
+        let (x0, y0) = start;
+        self.write_register(Register::ShapeStartX0, x0 as u8)?;
+        self.write_register(Register::ShapeStartX1, (x0 >> 8) as u8)?;
+        self.write_register(Register::ShapeStartY0, y0 as u8)?;
+        self.write_register(Register::ShapeStartY1, (y0 >> 8) as u8)?;
+        let (x1, y1) = end;
+        self.write_register(Register::ShapeEndX0, x1 as u8)?;
+        self.write_register(Register::ShapeEndX1, (x1 >> 8) as u8)?;
+        self.write_register(Register::ShapeEndY0, y1 as u8)?;
+        self.write_register(Register::ShapeEndY1, (y1 >> 8) as u8)?;
+        self.set_colors(color, None)?;
+        self.write_register(Register::Dcr, 0x80)?;
+        // Wait for command to finish
+        while (self.read_register(Register::Dcr)? & 0x80) != 0x00 {}
+        Ok(())
+    }
+
+    pub fn draw_vline(&mut self, start: Coord, height: i16, color: u16) -> Result<(), SpiError<SPI>> {
+        self.draw_line(start, (start.0, start.1 + height), color)
+    }
+
+    pub fn draw_hline(&mut self, start: Coord, width: i16, color: u16) -> Result<(), SpiError<SPI>> {
+        self.draw_line(start, (start.0 + width, start.1), color)
+    }
+
+    pub fn draw_rect(&mut self, corner: Coord, width: i16, height: i16, color: u16, fill: bool) -> Result<(), SpiError<SPI>> {
+        let (x0, y0) = corner;
+        self.write_register(Register::ShapeStartX0, x0 as u8)?;
+        self.write_register(Register::ShapeStartX1, (x0 >> 8) as u8)?;
+        self.write_register(Register::ShapeStartY0, y0 as u8)?;
+        self.write_register(Register::ShapeStartY1, (y0 >> 8) as u8)?;
+        self.write_register(Register::ShapeEndX0, width as u8)?;
+        self.write_register(Register::ShapeEndX1, (width >> 8) as u8)?;
+        self.write_register(Register::ShapeEndY0, height as u8)?;
+        self.write_register(Register::ShapeEndY1, (height >> 8) as u8)?;
+        self.set_colors(color, None)?;
+        if fill {
+            self.write_register(Register::Dcr, 0xB0)?;
+        } else {
+            self.write_register(Register::Dcr, 0x90)?;
+        }
+        // Wait for command to finish
+        while (self.read_register(Register::Dcr)? & 0x80) != 0x00 {}
+        Ok(())
+    }
+
+    pub fn fill_screen(&mut self, color: u16) -> Result<(), SpiError<SPI>> {
+        let (width, height) = self.dims;
+        self.draw_rect((0,0), width as i16, height as i16, color, true)
+    }
+
+    pub fn draw_circle(&mut self, center: Coord, radius: i16, color: u16, fill: bool) -> Result<(), SpiError<SPI>> {
+        let (x0, y0) = center;
+        self.write_register(Register::CircleX0, x0 as u8)?;
+        self.write_register(Register::CircleX1, (x0 >> 8) as u8)?;
+        self.write_register(Register::CircleY0, y0 as u8)?;
+        self.write_register(Register::CircleY1, (y0 >> 8) as u8)?;
+        self.write_register(Register::CircleR, radius as u8)?;
+        self.set_colors(color, None)?;
+        if fill {
+         self.write_register(Register::Dcr, cmds::Dcr::CIRCLE_START as u8 | cmds::Dcr::FILL as u8)?;
+        } else {
+         self.write_register(Register::Dcr, cmds::Dcr::CIRCLE_START as u8)?;
+        }
+        // Wait for command to finish
+        while (self.read_register(Register::Dcr)? & cmds::Dcr::CIRCLE_START as u8) != 0x00 {}
+        Ok(())
+    }
+
+    // TODO: Ellipse, Triangle, and Curve
+
+    /// Enable the touch panel, establish auto mode, and enable touch interrupts.
+    fn enable_touch(&mut self) -> Result<(), SpiError<SPI>> {
+        self.write_register(Register::Tpcr0, cmds::Tpcr0::ENABLE as u8 |
+                                             cmds::Tpcr0::WAIT_16384CLK as u8 |
+                                             cmds::Tpcr0::ADCCLK_DIV32 as u8)?;
+        self.write_register(Register::Tpcr1, cmds::Tprc1::AUTO as u8 |
+                                             cmds::Tprc1::DEBOUNCE as u8)?;
+        let tmp = self.read_register(Register::Intc1)?;
+        self.write_register(Register::Intc1, tmp | cmds::Intc1::TP as u8)?;
+        Ok(())
+    }
+
+    /// Check if touch event interrupt occurred
+    pub fn touched(&mut self) -> Result<bool, SpiError<SPI>> {
+        Ok(self.read_register(Register::Intc2)? & cmds::Intc2::TP as u8 != 0x00)
+    }
+
+
+    pub fn get_touch(&mut self) -> Result<Coord, SpiError<SPI>> {
+        // unimplemented!()
+        let tx_high = self.read_register(Register::Tpxh)? as u16;
+        let ty_high = self.read_register(Register::Tpyh)? as u16;
+        let t_xy_lower_bits = self.read_register(Register::Tpxyl)? as u16;
+        let tx = (tx_high << 2) | (t_xy_lower_bits & 0x03);
+        let ty = (ty_high << 2) | ((t_xy_lower_bits >> 2) & 0x03);
+
+        // Clear the touch interrupt
+        self.write_register(Register::Intc2, cmds::Intc2::TP as u8)?;
+
+        Ok((tx as i16, ty as i16))
+    }
+
 }
 
 struct Timing {
@@ -408,4 +683,21 @@ struct Timing {
     vsync_pw: u8,
     vsync_nondisp: u16,
     vsync_start: u16
+}
+
+impl<SPI: FullDuplex<u8>> Write for RA8875<SPI> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        match self.mode {
+            Mode::Text => {
+                block!(self.write_command(Register::Mrwc as u8)).ok();
+                for c in s.as_bytes() {
+                    block!(self.write_data(*c)).ok();
+                }
+                Ok(())
+            },
+            Mode::Graphics => {
+                Err(fmt::Error)
+            }
+        }
+    }
 }
