@@ -6,4 +6,7 @@ version = "0.1.0"
 [dependencies]
 nb = "0.1.1"
 embedded-graphics = "0.6.2"
-embedded-hal = "0.2.3"
+
+[dependencies.embedded-hal]
+version = "0.2.3"
+features = ["unproven"]

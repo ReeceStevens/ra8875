@@ -11,8 +11,17 @@ extern crate embedded_hal as hal;
 
 use core::fmt;
 use core::fmt::Write;
-use embedded_graphics::DrawTarget;
-use hal::digital::InputPin;
+
+use embedded_graphics::{
+    prelude::*,
+    drawable,
+    pixelcolor::{IntoStorage, Rgb565},
+    DrawTarget,
+    style::{PrimitiveStyle, Styled},
+    primitives,
+};
+
+use hal::digital::v2::InputPin;
 use hal::spi::FullDuplex;
 
 type SpiError<SPI> = <SPI as FullDuplex<u8>>::Error;
@@ -38,6 +47,7 @@ enum Command {
 }
 
 #[derive(Copy, Clone)]
+#[allow(non_camel_case_types)]
 enum Register {
     Pwrr = 0x01,
     Mrwc = 0x02,
@@ -136,6 +146,7 @@ enum Register {
     EllipseCenterY1 = 0xa8,
 }
 
+#[allow(non_camel_case_types)]
 mod cmds {
     pub enum Pwrr {
         DispOn = 0x80,
@@ -314,18 +325,18 @@ enum Mode {
     Graphics,
 }
 
-struct RA8875<SPI: FullDuplex<u8>> {
+struct RA8875<SPI: FullDuplex<u8>, P: InputPin> {
     spi: SPI,
     dims: (u16, u16),
     text_settings: TextModeSettings,
     gfx_settings: GraphicsModeSettings,
     mode: Mode,
-    ready: InputPin,
+    ready: P,
 }
 
-impl<SPI: FullDuplex<u8>> RA8875<SPI> {
+impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
     fn write_data(&mut self, data: u8) -> nb::Result<(), SpiError<SPI>> {
-        if self.ready.is_low() {
+        if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
             self.spi.send(Command::DataWrite as u8)?;
@@ -335,7 +346,7 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
     }
 
     fn read_data(&mut self) -> nb::Result<u8, SpiError<SPI>> {
-        if self.ready.is_low() {
+        if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
             self.spi.send(Command::DataRead as u8)?;
@@ -345,7 +356,7 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
     }
 
     fn write_command(&mut self, command: u8) -> nb::Result<(), SpiError<SPI>> {
-        if self.ready.is_low() {
+        if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
             self.spi.send(Command::CmdWrite as u8)?;
@@ -355,7 +366,7 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
     }
 
     fn read_status(&mut self) -> nb::Result<u8, SpiError<SPI>> {
-        if self.ready.is_low() {
+        if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
             self.spi.send(Command::CmdRead as u8)?;
@@ -578,8 +589,8 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
         Ok(())
     }
 
-    /// Draw a single `color` colored pixel at coordinate `coord`.
-    pub fn draw_pixel(&mut self, coord: Coord, color: u16) -> Result<(), SpiError<SPI>> {
+    /// Draw a single `color` colored point at coordinate `coord`.
+    pub fn draw_point(&mut self, coord: Coord, color: u16) -> Result<(), SpiError<SPI>> {
         self.set_cursor(coord)?;
         block!(self.write_command(Register::Mrwc as u8))?;
         block!(self.spi.send(Command::DataWrite as u8))?;
@@ -705,10 +716,10 @@ impl<SPI: FullDuplex<u8>> RA8875<SPI> {
         self.write_register(Register::ShapeEndY1, (y1 >> 8) as u8)?;
 
         // Point 2
-        self.write_register(Register::TriangleP2X0, x1 as u8)?;
-        self.write_register(Register::TriangleP2X1, (x1 >> 8) as u8)?;
-        self.write_register(Register::TriangleP2Y0, y1 as u8)?;
-        self.write_register(Register::TriangleP2Y1, (y1 >> 8) as u8)?;
+        self.write_register(Register::TriangleP2X0, x2 as u8)?;
+        self.write_register(Register::TriangleP2X1, (x2 >> 8) as u8)?;
+        self.write_register(Register::TriangleP2Y0, y2 as u8)?;
+        self.write_register(Register::TriangleP2Y1, (y2 >> 8) as u8)?;
 
         self.set_colors(color, None)?;
         if fill {
@@ -862,7 +873,7 @@ struct Timing {
     vsync_start: u16,
 }
 
-impl<SPI: FullDuplex<u8>> Write for RA8875<SPI> {
+impl<SPI: FullDuplex<u8>, P: InputPin> Write for RA8875<SPI, P> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         match self.mode {
             Mode::Text => {
@@ -875,4 +886,71 @@ impl<SPI: FullDuplex<u8>> Write for RA8875<SPI> {
             Mode::Graphics => Err(fmt::Error),
         }
     }
+}
+
+fn to_coord(p: Point) -> Coord {
+    (p.x as i16, p.y as i16)
+}
+
+impl<SPI: FullDuplex<u8>, P: InputPin> DrawTarget<Rgb565> for RA8875<SPI, P> {
+    type Error = SpiError<SPI>;
+
+    fn draw_pixel(&mut self, item: drawable::Pixel<Rgb565>) -> Result<(), Self::Error> {
+        self.draw_point((item.0.x as i16, item.0.y as i16), item.1.into_storage())
+    }
+
+    fn size(&self) -> Size {
+        Size::new(self.dims.0 as u32, self.dims.1 as u32)
+    }
+
+    fn clear(&mut self, color: Rgb565) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        self.fill_screen(color.into_storage())
+    }
+
+    fn draw_line(
+        &mut self,
+        item: &Styled<primitives::Line, PrimitiveStyle<Rgb565>>,
+    ) -> Result<(), Self::Error> {
+        self.draw_line(to_coord(item.primitive.start), to_coord(item.primitive.end), item.style.stroke_color.unwrap().into_storage())
+    }
+
+    fn draw_triangle(
+        &mut self,
+        item: &Styled<primitives::Triangle, PrimitiveStyle<Rgb565>>,
+    ) -> Result<(), Self::Error> {
+        // TODO: Currently don't allow fill colors different from stroke color
+        self.draw_triangle(to_coord(item.primitive.p1), to_coord(item.primitive.p2), to_coord(item.primitive.p3), item.style.stroke_color.unwrap().into_storage(), item.style.fill_color.is_some())
+    }
+
+    fn draw_rectangle(
+        &mut self,
+        item: &Styled<primitives::Rectangle, PrimitiveStyle<Rgb565>>,
+    ) -> Result<(), Self::Error> {
+        // TODO: Currently don't allow fill colors different from stroke color
+        let dimensions = item.bottom_right() - item.top_left();
+        let (width, height) = (dimensions.x, dimensions.y);
+        self.draw_rect(
+            to_coord(item.top_left()),
+            width as i16,
+            height as i16,
+            item.style.stroke_color.unwrap().into_storage(),
+            item.style.fill_color.is_some()
+        )
+    }
+
+    fn draw_circle(
+        &mut self,
+        item: &Styled<primitives::Circle, PrimitiveStyle<Rgb565>>,
+    ) -> Result<(), Self::Error> {
+        self.draw_circle(
+            to_coord(item.primitive.center),
+            item.primitive.radius as i16,
+            item.style.stroke_color.unwrap().into_storage(),
+            item.style.fill_color.is_some()
+        )
+    }
+
 }
