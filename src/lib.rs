@@ -13,15 +13,15 @@ use core::fmt;
 use core::fmt::Write;
 
 use embedded_graphics::{
-    prelude::*,
     drawable,
     pixelcolor::{IntoStorage, Rgb565},
-    DrawTarget,
-    style::{PrimitiveStyle, Styled},
+    prelude::*,
     primitives,
+    style::{PrimitiveStyle, Styled},
+    DrawTarget,
 };
 
-use hal::digital::v2::InputPin;
+use hal::digital::v2::{InputPin, OutputPin};
 use hal::spi::FullDuplex;
 
 type SpiError<SPI> = <SPI as FullDuplex<u8>>::Error;
@@ -49,6 +49,7 @@ enum Command {
 #[derive(Copy, Clone)]
 #[allow(non_camel_case_types)]
 enum Register {
+    SelfTest = 0x00,
     Pwrr = 0x01,
     Mrwc = 0x02,
     PllC1 = 0x88,
@@ -325,22 +326,68 @@ enum Mode {
     Graphics,
 }
 
-struct RA8875<SPI: FullDuplex<u8>, P: InputPin> {
-    spi: SPI,
+pub struct RA8875<SPI: FullDuplex<u8>, P: InputPin, O1: OutputPin, O2: OutputPin> {
+    pub spi: SPI,
     dims: (u16, u16),
     text_settings: TextModeSettings,
     gfx_settings: GraphicsModeSettings,
     mode: Mode,
-    ready: P,
+    pub ready: P,
+    pub cs: O1,
+    pub rst: O2,
 }
 
-impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
+impl<SPI, P, O1, O2> RA8875<SPI, P, O1, O2>
+where
+    SPI: FullDuplex<u8>,
+    P: InputPin,
+    O1: OutputPin,
+    O2: OutputPin,
+{
+    pub fn new(spi: SPI, dims: (u16, u16), ready: P, cs: O1, rst: O2) -> Self {
+        RA8875 {
+            spi,
+            dims,
+            text_settings: TextModeSettings {
+                cursor: (0, 0),
+                fg_color: 0,
+                bg_color: None,
+                text_scale: 1,
+                transparency: false,
+            },
+            gfx_settings: GraphicsModeSettings {
+                cursor: (0, 0),
+                color: 0,
+            },
+            mode: Mode::Graphics,
+            ready,
+            cs,
+            rst
+        }
+    }
+
+    fn spi_send(&mut self, data: u8) -> Result<(), SpiError<SPI>> {
+        block!(self.spi.send(data))?;
+        block!(self.spi.read())?; // Dummy read, toss the result.
+        Ok(())
+    }
+
+    fn spi_read(&mut self) -> Result<u8, SpiError<SPI>> {
+        let dummy = 0_u8;
+        block!(self.spi.send(dummy))?; // Dummy write for full duplex
+        let result = block!(self.spi.read())?;
+        Ok(result)
+    }
+
+
     fn write_data(&mut self, data: u8) -> nb::Result<(), SpiError<SPI>> {
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            self.spi.send(Command::DataWrite as u8)?;
-            self.spi.send(data)?;
+            // self.cs.set_low().ok().unwrap();
+            self.spi_send(Command::DataWrite as u8).ok().unwrap();
+            self.spi_send(data).ok().unwrap();
+            // self.cs.set_high().ok().unwrap();
             Ok(())
         }
     }
@@ -349,8 +396,10 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            self.spi.send(Command::DataRead as u8)?;
-            let result = self.spi.read()?;
+            // self.cs.set_low().ok().unwrap();
+            self.spi_send(Command::DataRead as u8).ok().unwrap();
+            let result = self.spi_read().ok().unwrap();
+            // self.cs.set_high().ok().unwrap();
             Ok(result)
         }
     }
@@ -359,8 +408,10 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            self.spi.send(Command::CmdWrite as u8)?;
-            self.spi.send(command)?;
+            // self.cs.set_low().ok().unwrap();
+            self.spi_send(Command::CmdWrite as u8).ok().unwrap();
+            self.spi_send(command).ok().unwrap();
+            // self.cs.set_high().ok().unwrap();
             Ok(())
         }
     }
@@ -369,8 +420,10 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            self.spi.send(Command::CmdRead as u8)?;
-            let result = self.spi.read()?;
+            // self.cs.set_low().ok().unwrap();
+            self.spi_send(Command::CmdRead as u8).ok().unwrap();
+            let result = self.spi_read().ok().unwrap();
+            // self.cs.set_high().ok().unwrap();
             Ok(result)
         }
     }
@@ -386,7 +439,11 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
         block!(self.read_data())
     }
 
-    fn init(&mut self) -> Result<(), SpiError<SPI>> {
+    pub fn self_check(&mut self) -> Result<u8, SpiError<SPI>> {
+        self.read_register(Register::SelfTest)
+    }
+
+    pub fn init(&mut self) -> Result<(), SpiError<SPI>> {
         let (width, height) = self.dims;
         self.write_register(Register::PllC1, cmds::PllC1::Div1 as u8 + 10)?;
         self.write_register(Register::PllC2, cmds::PllC2::Div4 as u8)?;
@@ -512,10 +569,10 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
 
     /// Low-level function to push a raw chunk of pixel data.
     fn push_pixels(&mut self, num_pixels: u32, color: u16) -> Result<(), SpiError<SPI>> {
-        block!(self.spi.send(Command::DataWrite as u8))?;
+        self.spi_send(Command::DataWrite as u8)?;
         for _ in 0..num_pixels {
-            block!(self.spi.send((color >> 8) as u8))?;
-            block!(self.spi.send(color as u8))?;
+            self.spi_send((color >> 8) as u8)?;
+            self.spi_send(color as u8)?;
         }
         Ok(())
     }
@@ -593,9 +650,9 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
     pub fn draw_point(&mut self, coord: Coord, color: u16) -> Result<(), SpiError<SPI>> {
         self.set_cursor(coord)?;
         block!(self.write_command(Register::Mrwc as u8))?;
-        block!(self.spi.send(Command::DataWrite as u8))?;
-        block!(self.spi.send((color >> 8) as u8))?;
-        block!(self.spi.send(color as u8))?;
+        self.spi_send(Command::DataWrite as u8)?;
+        self.spi_send((color >> 8) as u8)?;
+        self.spi_send(color as u8)?;
         Ok(())
     }
 
@@ -826,7 +883,7 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
     }
 
     /// Enable the touch panel, establish auto mode, and enable touch interrupts.
-    fn enable_touch(&mut self) -> Result<(), SpiError<SPI>> {
+    pub fn enable_touch(&mut self) -> Result<(), SpiError<SPI>> {
         self.write_register(
             Register::Tpcr0,
             cmds::Tpcr0::ENABLE as u8
@@ -862,7 +919,7 @@ impl<SPI: FullDuplex<u8>, P: InputPin> RA8875<SPI, P> {
     }
 }
 
-struct Timing {
+pub struct Timing {
     pixclk: u8,
     hsync_start: u8,
     hsync_pw: u8,
@@ -873,7 +930,13 @@ struct Timing {
     vsync_start: u16,
 }
 
-impl<SPI: FullDuplex<u8>, P: InputPin> Write for RA8875<SPI, P> {
+impl<SPI, P, O1, O2> Write for RA8875<SPI, P, O1, O2> 
+where
+    SPI: FullDuplex<u8>,
+    P: InputPin,
+    O1: OutputPin,
+    O2: OutputPin,
+{
     fn write_str(&mut self, s: &str) -> fmt::Result {
         match self.mode {
             Mode::Text => {
@@ -892,7 +955,13 @@ fn to_coord(p: Point) -> Coord {
     (p.x as i16, p.y as i16)
 }
 
-impl<SPI: FullDuplex<u8>, P: InputPin> DrawTarget<Rgb565> for RA8875<SPI, P> {
+impl<SPI, P, O1, O2> DrawTarget<Rgb565> for RA8875<SPI, P, O1, O2> 
+where
+    SPI: FullDuplex<u8>,
+    P: InputPin,
+    O1: OutputPin,
+    O2: OutputPin,
+{
     type Error = SpiError<SPI>;
 
     fn draw_pixel(&mut self, item: drawable::Pixel<Rgb565>) -> Result<(), Self::Error> {
@@ -914,7 +983,11 @@ impl<SPI: FullDuplex<u8>, P: InputPin> DrawTarget<Rgb565> for RA8875<SPI, P> {
         &mut self,
         item: &Styled<primitives::Line, PrimitiveStyle<Rgb565>>,
     ) -> Result<(), Self::Error> {
-        self.draw_line(to_coord(item.primitive.start), to_coord(item.primitive.end), item.style.stroke_color.unwrap().into_storage())
+        self.draw_line(
+            to_coord(item.primitive.start),
+            to_coord(item.primitive.end),
+            item.style.stroke_color.unwrap().into_storage(),
+        )
     }
 
     fn draw_triangle(
@@ -922,7 +995,13 @@ impl<SPI: FullDuplex<u8>, P: InputPin> DrawTarget<Rgb565> for RA8875<SPI, P> {
         item: &Styled<primitives::Triangle, PrimitiveStyle<Rgb565>>,
     ) -> Result<(), Self::Error> {
         // TODO: Currently don't allow fill colors different from stroke color
-        self.draw_triangle(to_coord(item.primitive.p1), to_coord(item.primitive.p2), to_coord(item.primitive.p3), item.style.stroke_color.unwrap().into_storage(), item.style.fill_color.is_some())
+        self.draw_triangle(
+            to_coord(item.primitive.p1),
+            to_coord(item.primitive.p2),
+            to_coord(item.primitive.p3),
+            item.style.stroke_color.unwrap().into_storage(),
+            item.style.fill_color.is_some(),
+        )
     }
 
     fn draw_rectangle(
@@ -937,7 +1016,7 @@ impl<SPI: FullDuplex<u8>, P: InputPin> DrawTarget<Rgb565> for RA8875<SPI, P> {
             width as i16,
             height as i16,
             item.style.stroke_color.unwrap().into_storage(),
-            item.style.fill_color.is_some()
+            item.style.fill_color.is_some(),
         )
     }
 
@@ -949,8 +1028,7 @@ impl<SPI: FullDuplex<u8>, P: InputPin> DrawTarget<Rgb565> for RA8875<SPI, P> {
             to_coord(item.primitive.center),
             item.primitive.radius as i16,
             item.style.stroke_color.unwrap().into_storage(),
-            item.style.fill_color.is_some()
+            item.style.fill_color.is_some(),
         )
     }
-
 }
