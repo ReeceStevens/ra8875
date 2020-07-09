@@ -8,6 +8,8 @@
 extern crate nb;
 extern crate embedded_graphics;
 extern crate embedded_hal as hal;
+#[macro_use]
+extern crate log;
 
 use core::fmt;
 use core::fmt::Write;
@@ -145,6 +147,7 @@ enum Register {
     EllipseCenterX1 = 0xa6,
     EllipseCenterY0 = 0xa7,
     EllipseCenterY1 = 0xa8,
+    GpioX = 0xC7,
 }
 
 #[allow(non_camel_case_types)]
@@ -384,10 +387,10 @@ where
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            // self.cs.set_low().ok().unwrap();
+            self.cs.set_low().ok().unwrap();
             self.spi_send(Command::DataWrite as u8).ok().unwrap();
             self.spi_send(data).ok().unwrap();
-            // self.cs.set_high().ok().unwrap();
+            self.cs.set_high().ok().unwrap();
             Ok(())
         }
     }
@@ -396,10 +399,10 @@ where
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            // self.cs.set_low().ok().unwrap();
+            self.cs.set_low().ok().unwrap();
             self.spi_send(Command::DataRead as u8).ok().unwrap();
             let result = self.spi_read().ok().unwrap();
-            // self.cs.set_high().ok().unwrap();
+            self.cs.set_high().ok().unwrap();
             Ok(result)
         }
     }
@@ -408,10 +411,10 @@ where
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            // self.cs.set_low().ok().unwrap();
+            self.cs.set_low().ok().unwrap();
             self.spi_send(Command::CmdWrite as u8).ok().unwrap();
             self.spi_send(command).ok().unwrap();
-            // self.cs.set_high().ok().unwrap();
+            self.cs.set_high().ok().unwrap();
             Ok(())
         }
     }
@@ -420,10 +423,10 @@ where
         if self.ready.is_low().ok().unwrap() {
             Err(nb::Error::WouldBlock)
         } else {
-            // self.cs.set_low().ok().unwrap();
+            self.cs.set_low().ok().unwrap();
             self.spi_send(Command::CmdRead as u8).ok().unwrap();
             let result = self.spi_read().ok().unwrap();
-            // self.cs.set_high().ok().unwrap();
+            self.cs.set_high().ok().unwrap();
             Ok(result)
         }
     }
@@ -443,10 +446,13 @@ where
         self.read_register(Register::SelfTest)
     }
 
+    pub fn set_up_pll(&mut self) -> Result<(), SpiError<SPI>> {
+        self.write_register(Register::PllC1, cmds::PllC1::Div1 as u8 + 10)?;
+        self.write_register(Register::PllC2, cmds::PllC2::Div4 as u8)
+    }
+
     pub fn init(&mut self) -> Result<(), SpiError<SPI>> {
         let (width, height) = self.dims;
-        self.write_register(Register::PllC1, cmds::PllC1::Div1 as u8 + 10)?;
-        self.write_register(Register::PllC2, cmds::PllC2::Div4 as u8)?;
         self.write_register(Register::Sysr, cmds::Sysr::BBP_16 as u8)?;
         let t = match self.dims {
             (480, 272) => Timing {
@@ -505,10 +511,48 @@ where
         // Clear screen
         self.write_register(Register::Mclr, cmds::Mclr::Start as u8)?;
 
-        self.text_mode()?;
-
         Ok(())
     }
+
+    pub fn display_on(&mut self, on: bool) -> Result<(), SpiError<SPI>> {
+        if on {
+            self.write_register(Register::Pwrr, cmds::Pwrr::Normal as u8 | cmds::Pwrr::DispOn as u8)
+        } else {
+            self.write_register(Register::Pwrr, cmds::Pwrr::Normal as u8)
+        }
+    }
+
+    pub fn gpiox(&mut self, on: bool) -> Result<(), SpiError<SPI>> {
+        if on {
+            self.write_register(Register::GpioX, 1)
+        } else {
+            self.write_register(Register::GpioX, 0)
+        }
+    }
+
+    pub fn pwm1_out(&mut self, pulse: u8)  -> Result<(), SpiError<SPI>> {
+        self.write_register(Register::P1dcr, pulse)
+    }
+
+    pub fn pwm1_config(&mut self, on: bool, clock: u8) -> Result<(), SpiError<SPI>> {
+        if on {
+            self.write_register(Register::P1cr, cmds::P1cr::Enable as u8 | (clock & 0xF))
+        } else {
+            self.write_register(Register::P1cr, clock & 0xF)
+        }
+    }
+
+    pub fn pwm2_out(&mut self, pulse: u8)  -> Result<(), SpiError<SPI>> {
+        self.write_register(Register::P2dcr, pulse)
+    }
+    pub fn pwm2_config(&mut self, on: bool, clock: u8) -> Result<(), SpiError<SPI>> {
+        if on {
+            self.write_register(Register::P2cr, cmds::P2cr::Enable as u8 | (clock & 0xF))
+        } else {
+            self.write_register(Register::P2cr, clock & 0xF)
+        }
+    }
+
 
     /// Enables text mode
     ///
@@ -569,11 +613,13 @@ where
 
     /// Low-level function to push a raw chunk of pixel data.
     fn push_pixels(&mut self, num_pixels: u32, color: u16) -> Result<(), SpiError<SPI>> {
+        self.cs.set_low().ok().unwrap();
         self.spi_send(Command::DataWrite as u8)?;
         for _ in 0..num_pixels {
             self.spi_send((color >> 8) as u8)?;
             self.spi_send(color as u8)?;
         }
+        self.cs.set_high().ok().unwrap();
         Ok(())
     }
 
@@ -605,7 +651,9 @@ where
     fn set_colors(&mut self, fg_color: u16, bg_color: Option<u16>) -> Result<(), SpiError<SPI>> {
         match self.mode {
             Mode::Graphics => {
-                // TODO
+                self.write_register(Register::Color0, ((fg_color & 0xf800) >> 11) as u8)?;
+                self.write_register(Register::Color1, ((fg_color & 0x07e0) >> 5) as u8)?;
+                self.write_register(Register::Color2, (fg_color & 0x001f) as u8)?;
                 Ok(())
             }
             Mode::Text => {
@@ -650,9 +698,11 @@ where
     pub fn draw_point(&mut self, coord: Coord, color: u16) -> Result<(), SpiError<SPI>> {
         self.set_cursor(coord)?;
         block!(self.write_command(Register::Mrwc as u8))?;
+        self.cs.set_low().ok().unwrap();
         self.spi_send(Command::DataWrite as u8)?;
         self.spi_send((color >> 8) as u8)?;
         self.spi_send(color as u8)?;
+        self.cs.set_high().ok().unwrap();
         Ok(())
     }
 
@@ -694,21 +744,21 @@ where
 
     pub fn draw_rect(
         &mut self,
-        corner: Coord,
-        width: i16,
-        height: i16,
+        top_left: Coord,
+        bottom_right: Coord,
         color: u16,
         fill: bool,
     ) -> Result<(), SpiError<SPI>> {
-        let (x0, y0) = corner;
+        let (x0, y0) = top_left;
+        let (x1, y1) = bottom_right;
         self.write_register(Register::ShapeStartX0, x0 as u8)?;
         self.write_register(Register::ShapeStartX1, (x0 >> 8) as u8)?;
         self.write_register(Register::ShapeStartY0, y0 as u8)?;
         self.write_register(Register::ShapeStartY1, (y0 >> 8) as u8)?;
-        self.write_register(Register::ShapeEndX0, width as u8)?;
-        self.write_register(Register::ShapeEndX1, (width >> 8) as u8)?;
-        self.write_register(Register::ShapeEndY0, height as u8)?;
-        self.write_register(Register::ShapeEndY1, (height >> 8) as u8)?;
+        self.write_register(Register::ShapeEndX0, x1 as u8)?;
+        self.write_register(Register::ShapeEndX1, (x1 >> 8) as u8)?;
+        self.write_register(Register::ShapeEndY0, y1 as u8)?;
+        self.write_register(Register::ShapeEndY1, (y1 >> 8) as u8)?;
         self.set_colors(color, None)?;
         if fill {
             self.write_register(Register::Dcr, 0xB0)?;
@@ -722,7 +772,7 @@ where
 
     pub fn fill_screen(&mut self, color: u16) -> Result<(), SpiError<SPI>> {
         let (width, height) = self.dims;
-        self.draw_rect((0, 0), width as i16, height as i16, color, true)
+        self.draw_rect((0, 0), (width as i16, height as i16), color, true)
     }
 
     pub fn draw_circle(
@@ -1009,12 +1059,9 @@ where
         item: &Styled<primitives::Rectangle, PrimitiveStyle<Rgb565>>,
     ) -> Result<(), Self::Error> {
         // TODO: Currently don't allow fill colors different from stroke color
-        let dimensions = item.bottom_right() - item.top_left();
-        let (width, height) = (dimensions.x, dimensions.y);
         self.draw_rect(
             to_coord(item.top_left()),
-            width as i16,
-            height as i16,
+            to_coord(item.bottom_right()),
             item.style.stroke_color.unwrap().into_storage(),
             item.style.fill_color.is_some(),
         )
