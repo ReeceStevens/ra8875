@@ -1044,13 +1044,21 @@ where
         &mut self,
         item: &Styled<primitives::Triangle, PrimitiveStyle<Rgb565>>,
     ) -> Result<(), Self::Error> {
-        // TODO: Currently don't allow fill colors different from stroke color
+        if item.style.fill_color.is_some() {
+            self.draw_triangle(
+                to_coord(item.primitive.p1),
+                to_coord(item.primitive.p2),
+                to_coord(item.primitive.p3),
+                item.style.fill_color.unwrap().into_storage(),
+                true,
+            )?;
+        }
         self.draw_triangle(
             to_coord(item.primitive.p1),
             to_coord(item.primitive.p2),
             to_coord(item.primitive.p3),
             item.style.stroke_color.unwrap().into_storage(),
-            item.style.fill_color.is_some(),
+            false,
         )
     }
 
@@ -1058,12 +1066,19 @@ where
         &mut self,
         item: &Styled<primitives::Rectangle, PrimitiveStyle<Rgb565>>,
     ) -> Result<(), Self::Error> {
-        // TODO: Currently don't allow fill colors different from stroke color
+        if item.style.fill_color.is_some() {
+            self.draw_rect(
+                to_coord(item.top_left()),
+                to_coord(item.bottom_right()),
+                item.style.fill_color.unwrap().into_storage(),
+                true
+            )?;
+        }
         self.draw_rect(
             to_coord(item.top_left()),
             to_coord(item.bottom_right()),
             item.style.stroke_color.unwrap().into_storage(),
-            item.style.fill_color.is_some(),
+            false,
         )
     }
 
@@ -1071,11 +1086,19 @@ where
         &mut self,
         item: &Styled<primitives::Circle, PrimitiveStyle<Rgb565>>,
     ) -> Result<(), Self::Error> {
+        if item.style.fill_color.is_some() {
+            self.draw_circle(
+                to_coord(item.primitive.center),
+                item.primitive.radius as i16,
+                item.style.fill_color.unwrap().into_storage(),
+                false,
+            )?;
+        }
         self.draw_circle(
             to_coord(item.primitive.center),
             item.primitive.radius as i16,
             item.style.stroke_color.unwrap().into_storage(),
-            item.style.fill_color.is_some(),
+            false,
         )
     }
 }
