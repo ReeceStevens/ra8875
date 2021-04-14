@@ -610,7 +610,8 @@ where
     }
 
     /// Low-level function to push a raw chunk of pixel data.
-    fn push_pixels(&mut self, num_pixels: u32, color: u16) -> Result<(), SpiError<SPI>> {
+    pub fn push_pixels(&mut self, num_pixels: u32, color: u16) -> Result<(), SpiError<SPI>> {
+        block!(self.write_command(Register::Mrwc as u8))?;
         self.cs.set_low().ok().unwrap();
         self.spi_send(Command::DataWrite as u8)?;
         for _ in 0..num_pixels {
@@ -622,7 +623,7 @@ where
     }
 
     /// Sets the cursor position for the current display mode.
-    fn set_cursor(&mut self, new_position: Coord) -> Result<(), SpiError<SPI>> {
+    pub fn set_cursor(&mut self, new_position: Coord) -> Result<(), SpiError<SPI>> {
         let (x, y) = new_position;
         match self.mode {
             Mode::Graphics => {
@@ -1045,11 +1046,28 @@ where
         self.fill_screen(color.into_storage())
     }
 
-    // fn fill_contiguous<I>(&mut self, area: &primitives::Rectangle, colors: I) -> Result<(), Self::Error>
-    // where
-    //     I: IntoIterator<Item = Self::Color>,
-    // {
-    // }
+    fn fill_contiguous<I>(&mut self, area: &primitives::Rectangle, colors: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let point_color_pairs = area.points().zip(colors);
+
+        let mut last_y = None;
+        for (point, color) in point_color_pairs {
+            if Some(point.y) != last_y {
+                self.cs.set_high().ok().unwrap();
+                last_y = Some(point.y);
+                self.set_cursor(to_coord(point))?;
+                block!(self.write_command(Register::Mrwc as u8))?;
+                self.cs.set_low().ok().unwrap();
+                self.spi_send(Command::DataWrite as u8)?;
+            }
+            // self.draw_point(to_coord(point), color.into_storage());
+            self.spi_send((color.into_storage() >> 8) as u8)?;
+            self.spi_send(color.into_storage() as u8)?;
+        }
+        Ok(())
+    }
 
     fn fill_solid(&mut self, area: &primitives::Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         self.draw_rect(
