@@ -1000,7 +1000,7 @@ where
     }
 }
 
-fn to_coord(p: Point) -> Coord {
+pub fn to_coord(p: Point) -> Coord {
     (p.x as i16, p.y as i16)
 }
 
@@ -1077,35 +1077,4 @@ where
             true
         )
     }
-
-    // fn draw_line(
-    //     &mut self,
-    //     item: &Styled<primitives::Line, primitives::PrimitiveStyle<Rgb565>>,
-    // ) -> Result<(), Self::Error> {
-    //     self.draw_line(
-    //         to_coord(item.primitive.start),
-    //         to_coord(item.primitive.end),
-    //         item.style.stroke_color.unwrap().into_storage(),
-    //     )
-    // }
-
-    // fn draw_rectangle(
-    //     &mut self,
-    //     item: &Styled<primitives::Rectangle, primitives::PrimitiveStyle<Rgb565>>,
-    // ) -> Result<(), Self::Error> {
-    //     if item.style.fill_color.is_some() {
-    //         self.draw_rect(
-    //             to_coord(item.top_left()),
-    //             to_coord(item.bottom_right()),
-    //             item.style.fill_color.unwrap().into_storage(),
-    //             true
-    //         )?;
-    //     }
-    //     self.draw_rect(
-    //         to_coord(item.top_left()),
-    //         to_coord(item.bottom_right()),
-    //         item.style.stroke_color.unwrap().into_storage(),
-    //         false,
-    //     )
-    // }
 }
