@@ -8,19 +8,14 @@
 extern crate nb;
 extern crate embedded_graphics;
 extern crate embedded_hal as hal;
-#[macro_use]
-extern crate log;
 
 use core::fmt;
 use core::fmt::Write;
 
 use embedded_graphics::{
-    drawable,
     pixelcolor::{IntoStorage, Rgb565},
     prelude::*,
     primitives,
-    style::{PrimitiveStyle, Styled},
-    DrawTarget,
 };
 
 use hal::digital::v2::{InputPin, OutputPin};
@@ -331,7 +326,7 @@ enum Mode {
 
 pub struct RA8875<SPI: FullDuplex<u8>, P: InputPin, O1: OutputPin, O2: OutputPin> {
     pub spi: SPI,
-    dims: (u16, u16),
+    dims: (u32, u32),
     text_settings: TextModeSettings,
     gfx_settings: GraphicsModeSettings,
     mode: Mode,
@@ -347,7 +342,7 @@ where
     O1: OutputPin,
     O2: OutputPin,
 {
-    pub fn new(spi: SPI, dims: (u16, u16), ready: P, cs: O1, rst: O2) -> Self {
+    pub fn new(spi: SPI, dims: (u32, u32), ready: P, cs: O1, rst: O2) -> Self {
         RA8875 {
             spi,
             dims,
@@ -365,7 +360,7 @@ where
             mode: Mode::Graphics,
             ready,
             cs,
-            rst
+            rst,
         }
     }
 
@@ -381,7 +376,6 @@ where
         let result = block!(self.spi.read())?;
         Ok(result)
     }
-
 
     fn write_data(&mut self, data: u8) -> nb::Result<(), SpiError<SPI>> {
         if self.ready.is_low().ok().unwrap() {
@@ -516,7 +510,10 @@ where
 
     pub fn display_on(&mut self, on: bool) -> Result<(), SpiError<SPI>> {
         if on {
-            self.write_register(Register::Pwrr, cmds::Pwrr::Normal as u8 | cmds::Pwrr::DispOn as u8)
+            self.write_register(
+                Register::Pwrr,
+                cmds::Pwrr::Normal as u8 | cmds::Pwrr::DispOn as u8,
+            )
         } else {
             self.write_register(Register::Pwrr, cmds::Pwrr::Normal as u8)
         }
@@ -530,7 +527,7 @@ where
         }
     }
 
-    pub fn pwm1_out(&mut self, pulse: u8)  -> Result<(), SpiError<SPI>> {
+    pub fn pwm1_out(&mut self, pulse: u8) -> Result<(), SpiError<SPI>> {
         self.write_register(Register::P1dcr, pulse)
     }
 
@@ -542,7 +539,7 @@ where
         }
     }
 
-    pub fn pwm2_out(&mut self, pulse: u8)  -> Result<(), SpiError<SPI>> {
+    pub fn pwm2_out(&mut self, pulse: u8) -> Result<(), SpiError<SPI>> {
         self.write_register(Register::P2dcr, pulse)
     }
     pub fn pwm2_config(&mut self, on: bool, clock: u8) -> Result<(), SpiError<SPI>> {
@@ -552,7 +549,6 @@ where
             self.write_register(Register::P2cr, clock & 0xF)
         }
     }
-
 
     /// Enables text mode
     ///
@@ -612,7 +608,8 @@ where
     }
 
     /// Low-level function to push a raw chunk of pixel data.
-    fn push_pixels(&mut self, num_pixels: u32, color: u16) -> Result<(), SpiError<SPI>> {
+    pub fn push_pixels(&mut self, num_pixels: u32, color: u16) -> Result<(), SpiError<SPI>> {
+        block!(self.write_command(Register::Mrwc as u8))?;
         self.cs.set_low().ok().unwrap();
         self.spi_send(Command::DataWrite as u8)?;
         for _ in 0..num_pixels {
@@ -624,7 +621,7 @@ where
     }
 
     /// Sets the cursor position for the current display mode.
-    fn set_cursor(&mut self, new_position: Coord) -> Result<(), SpiError<SPI>> {
+    pub fn set_cursor(&mut self, new_position: Coord) -> Result<(), SpiError<SPI>> {
         let (x, y) = new_position;
         match self.mode {
             Mode::Graphics => {
@@ -980,7 +977,7 @@ pub struct Timing {
     vsync_start: u16,
 }
 
-impl<SPI, P, O1, O2> Write for RA8875<SPI, P, O1, O2> 
+impl<SPI, P, O1, O2> Write for RA8875<SPI, P, O1, O2>
 where
     SPI: FullDuplex<u8>,
     P: InputPin,
@@ -1001,25 +998,44 @@ where
     }
 }
 
-fn to_coord(p: Point) -> Coord {
+pub fn to_coord(p: Point) -> Coord {
     (p.x as i16, p.y as i16)
 }
 
-impl<SPI, P, O1, O2> DrawTarget<Rgb565> for RA8875<SPI, P, O1, O2> 
+impl<SPI, P, O1, O2> OriginDimensions for RA8875<SPI, P, O1, O2>
 where
     SPI: FullDuplex<u8>,
     P: InputPin,
     O1: OutputPin,
     O2: OutputPin,
 {
-    type Error = SpiError<SPI>;
-
-    fn draw_pixel(&mut self, item: drawable::Pixel<Rgb565>) -> Result<(), Self::Error> {
-        self.draw_point((item.0.x as i16, item.0.y as i16), item.1.into_storage())
-    }
-
     fn size(&self) -> Size {
         Size::new(self.dims.0 as u32, self.dims.1 as u32)
+    }
+}
+
+impl<SPI, P, O1, O2> DrawTarget for RA8875<SPI, P, O1, O2>
+where
+    SPI: FullDuplex<u8>,
+    P: InputPin,
+    O1: OutputPin,
+    O2: OutputPin,
+{
+    type Color = Rgb565;
+    type Error = SpiError<SPI>;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        let bounding_box =
+            primitives::Rectangle::new(Point::new(0, 0), Size::new(self.dims.0, self.dims.1));
+        for Pixel(coord, color) in pixels.into_iter() {
+            if bounding_box.contains(coord) {
+                self.draw_point((coord.x as i16, coord.y as i16), color.into_storage())?;
+            }
+        }
+        Ok(())
     }
 
     fn clear(&mut self, color: Rgb565) -> Result<(), Self::Error>
@@ -1029,76 +1045,47 @@ where
         self.fill_screen(color.into_storage())
     }
 
-    fn draw_line(
+    fn fill_contiguous<I>(
         &mut self,
-        item: &Styled<primitives::Line, PrimitiveStyle<Rgb565>>,
-    ) -> Result<(), Self::Error> {
-        self.draw_line(
-            to_coord(item.primitive.start),
-            to_coord(item.primitive.end),
-            item.style.stroke_color.unwrap().into_storage(),
-        )
-    }
+        area: &primitives::Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let point_color_pairs = area.points().zip(colors);
 
-    fn draw_triangle(
-        &mut self,
-        item: &Styled<primitives::Triangle, PrimitiveStyle<Rgb565>>,
-    ) -> Result<(), Self::Error> {
-        if item.style.fill_color.is_some() {
-            self.draw_triangle(
-                to_coord(item.primitive.p1),
-                to_coord(item.primitive.p2),
-                to_coord(item.primitive.p3),
-                item.style.fill_color.unwrap().into_storage(),
-                true,
-            )?;
+        let mut last_y = None;
+        for (point, color) in point_color_pairs {
+            if Some(point.y) != last_y {
+                self.cs.set_high().ok().unwrap();
+                last_y = Some(point.y);
+                self.set_cursor(to_coord(point))?;
+                block!(self.write_command(Register::Mrwc as u8))?;
+                self.cs.set_low().ok().unwrap();
+                self.spi_send(Command::DataWrite as u8)?;
+            }
+            // self.draw_point(to_coord(point), color.into_storage());
+            self.spi_send((color.into_storage() >> 8) as u8)?;
+            self.spi_send(color.into_storage() as u8)?;
         }
-        self.draw_triangle(
-            to_coord(item.primitive.p1),
-            to_coord(item.primitive.p2),
-            to_coord(item.primitive.p3),
-            item.style.stroke_color.unwrap().into_storage(),
-            false,
-        )
+        Ok(())
     }
 
-    fn draw_rectangle(
+    fn fill_solid(
         &mut self,
-        item: &Styled<primitives::Rectangle, PrimitiveStyle<Rgb565>>,
+        area: &primitives::Rectangle,
+        color: Self::Color,
     ) -> Result<(), Self::Error> {
-        if item.style.fill_color.is_some() {
+        if let Some(bottom_right) = area.bottom_right() {
             self.draw_rect(
-                to_coord(item.top_left()),
-                to_coord(item.bottom_right()),
-                item.style.fill_color.unwrap().into_storage(),
-                true
-            )?;
+                to_coord(bottom_right),
+                to_coord(area.top_left),
+                color.into_storage(),
+                true,
+            )
+        } else {
+            Ok(())
         }
-        self.draw_rect(
-            to_coord(item.top_left()),
-            to_coord(item.bottom_right()),
-            item.style.stroke_color.unwrap().into_storage(),
-            false,
-        )
-    }
-
-    fn draw_circle(
-        &mut self,
-        item: &Styled<primitives::Circle, PrimitiveStyle<Rgb565>>,
-    ) -> Result<(), Self::Error> {
-        if item.style.fill_color.is_some() {
-            self.draw_circle(
-                to_coord(item.primitive.center),
-                item.primitive.radius as i16,
-                item.style.fill_color.unwrap().into_storage(),
-                false,
-            )?;
-        }
-        self.draw_circle(
-            to_coord(item.primitive.center),
-            item.primitive.radius as i16,
-            item.style.stroke_color.unwrap().into_storage(),
-            false,
-        )
     }
 }
