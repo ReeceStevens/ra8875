@@ -1070,11 +1070,15 @@ where
     }
 
     fn fill_solid(&mut self, area: &primitives::Rectangle, color: Self::Color) -> Result<(), Self::Error> {
-        self.draw_rect(
-            to_coord(area.top_left),
-            to_coord(area.bottom_right().unwrap()),
-            color.into_storage(),
-            true
-        )
+        if let Some(bottom_right) = area.bottom_right() {
+            self.draw_rect(
+                to_coord(bottom_right),
+                to_coord(area.top_left),
+                color.into_storage(),
+                true
+            )
+        } else {
+            Ok(())
+        }
     }
 }
