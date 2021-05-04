@@ -5,7 +5,7 @@ version = "0.1.0"
 
 [dependencies]
 nb = "0.1.1"
-embedded-graphics = { git = "https://github.com/rfuest/embedded-graphics", branch = "target-specific-drawables" }
+embedded-graphics = "0.7.0-beta.1"
 log = "0.4.6"
 
 [dependencies.embedded-hal]
