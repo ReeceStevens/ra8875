@@ -11,14 +11,11 @@ extern crate embedded_hal as hal;
 
 use core::fmt;
 use core::fmt::Write;
-use core::convert::TryInto;
 
 use embedded_graphics::{
-    // drawable,
     pixelcolor::{IntoStorage, Rgb565},
     prelude::*,
     primitives,
-    Styled,
 };
 
 use hal::digital::v2::{InputPin, OutputPin};
@@ -363,7 +360,7 @@ where
             mode: Mode::Graphics,
             ready,
             cs,
-            rst
+            rst,
         }
     }
 
@@ -379,7 +376,6 @@ where
         let result = block!(self.spi.read())?;
         Ok(result)
     }
-
 
     fn write_data(&mut self, data: u8) -> nb::Result<(), SpiError<SPI>> {
         if self.ready.is_low().ok().unwrap() {
@@ -514,7 +510,10 @@ where
 
     pub fn display_on(&mut self, on: bool) -> Result<(), SpiError<SPI>> {
         if on {
-            self.write_register(Register::Pwrr, cmds::Pwrr::Normal as u8 | cmds::Pwrr::DispOn as u8)
+            self.write_register(
+                Register::Pwrr,
+                cmds::Pwrr::Normal as u8 | cmds::Pwrr::DispOn as u8,
+            )
         } else {
             self.write_register(Register::Pwrr, cmds::Pwrr::Normal as u8)
         }
@@ -528,7 +527,7 @@ where
         }
     }
 
-    pub fn pwm1_out(&mut self, pulse: u8)  -> Result<(), SpiError<SPI>> {
+    pub fn pwm1_out(&mut self, pulse: u8) -> Result<(), SpiError<SPI>> {
         self.write_register(Register::P1dcr, pulse)
     }
 
@@ -540,7 +539,7 @@ where
         }
     }
 
-    pub fn pwm2_out(&mut self, pulse: u8)  -> Result<(), SpiError<SPI>> {
+    pub fn pwm2_out(&mut self, pulse: u8) -> Result<(), SpiError<SPI>> {
         self.write_register(Register::P2dcr, pulse)
     }
     pub fn pwm2_config(&mut self, on: bool, clock: u8) -> Result<(), SpiError<SPI>> {
@@ -550,7 +549,6 @@ where
             self.write_register(Register::P2cr, clock & 0xF)
         }
     }
-
 
     /// Enables text mode
     ///
@@ -979,7 +977,7 @@ pub struct Timing {
     vsync_start: u16,
 }
 
-impl<SPI, P, O1, O2> Write for RA8875<SPI, P, O1, O2> 
+impl<SPI, P, O1, O2> Write for RA8875<SPI, P, O1, O2>
 where
     SPI: FullDuplex<u8>,
     P: InputPin,
@@ -1004,7 +1002,7 @@ pub fn to_coord(p: Point) -> Coord {
     (p.x as i16, p.y as i16)
 }
 
-impl<SPI, P, O1, O2> OriginDimensions for RA8875<SPI, P, O1, O2> 
+impl<SPI, P, O1, O2> OriginDimensions for RA8875<SPI, P, O1, O2>
 where
     SPI: FullDuplex<u8>,
     P: InputPin,
@@ -1016,7 +1014,7 @@ where
     }
 }
 
-impl<SPI, P, O1, O2> DrawTarget for RA8875<SPI, P, O1, O2> 
+impl<SPI, P, O1, O2> DrawTarget for RA8875<SPI, P, O1, O2>
 where
     SPI: FullDuplex<u8>,
     P: InputPin,
@@ -1030,7 +1028,8 @@ where
     where
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
-        let bounding_box = primitives::Rectangle::new(Point::new(0, 0), Size::new(self.dims.0, self.dims.1));
+        let bounding_box =
+            primitives::Rectangle::new(Point::new(0, 0), Size::new(self.dims.0, self.dims.1));
         for Pixel(coord, color) in pixels.into_iter() {
             if bounding_box.contains(coord) {
                 self.draw_point((coord.x as i16, coord.y as i16), color.into_storage())?;
@@ -1046,7 +1045,11 @@ where
         self.fill_screen(color.into_storage())
     }
 
-    fn fill_contiguous<I>(&mut self, area: &primitives::Rectangle, colors: I) -> Result<(), Self::Error>
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &primitives::Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Self::Color>,
     {
@@ -1069,13 +1072,17 @@ where
         Ok(())
     }
 
-    fn fill_solid(&mut self, area: &primitives::Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+    fn fill_solid(
+        &mut self,
+        area: &primitives::Rectangle,
+        color: Self::Color,
+    ) -> Result<(), Self::Error> {
         if let Some(bottom_right) = area.bottom_right() {
             self.draw_rect(
                 to_coord(bottom_right),
                 to_coord(area.top_left),
                 color.into_storage(),
-                true
+                true,
             )
         } else {
             Ok(())
